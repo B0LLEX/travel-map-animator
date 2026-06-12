@@ -36,7 +36,7 @@ Dependencies:
     brew install ffmpeg
 """
 
-import argparse, math, pathlib, shutil, subprocess, tempfile, time
+import argparse, heapq, math, pathlib, shutil, subprocess, tempfile, time
 import requests
 from staticmap import StaticMap, Line
 from PIL import Image, ImageDraw, ImageFont, ImageEnhance
@@ -217,7 +217,6 @@ def route_via_graph(way_node_lists, node_coords, start, end):
     so the graph has real topology — parallel tracks and branch lines fall away
     naturally. Returns a list of (lon, lat), or None if no path exists.
     """
-    import heapq
     adj = {}
     def add_edge(a, b, w):
         adj.setdefault(a, []).append((b, w))
@@ -234,7 +233,7 @@ def route_via_graph(way_node_lists, node_coords, start, end):
         ca = node_coords[a]
         for b in endpoints[i+1:]:
             d = dist(ca, node_coords[b])
-            if 0 < d < 0.003:  # ~300 m
+            if 0 < d < 0.003:  # ~170-330 m depending on direction
                 add_edge(a, b, d)
 
     if not adj:
@@ -479,7 +478,9 @@ def main():
         try:
             rel_ids = [int(x) for x in args.osm_relation.split(',') if x.strip()]
         except ValueError:
-            ap.error(f"--osm-relation must be integers (comma-separated): {args.osm_relation!r}")
+            ap.error(f"--osm-relation expects numeric IDs (comma-separated), got: {args.osm_relation!r}")
+        if not rel_ids:
+            ap.error(f"--osm-relation produced no valid IDs: {args.osm_relation!r}")
 
     # Fetch route
     if args.mode == 'rail':
