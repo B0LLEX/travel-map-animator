@@ -1,0 +1,3 @@
+requests==2.34.2
+staticmap==0.5.7
+pillow==12.2.0
