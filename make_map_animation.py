@@ -25,7 +25,7 @@ Modes:
     OSM relation ID for a named rail line (e.g. 965964 = Dovrebanen).
     Fetches only ways that are members of the relation — avoids tangling with
     branch lines and metro tracks in dense areas (Oslo). Without this flag all
-    rail ways in the bounding box are used (legacy behaviour). Find the ID on
+    rail ways in the bounding box are used (legacy behavior). Find the ID on
     openstreetmap.org by searching for the line name and selecting the
     "Relation" result.
 
@@ -302,7 +302,7 @@ def build_frame(base_img_rgba, route_pts_so_far, all_route_pts, station_markers,
         for i in range(len(pixels) - 1):
             draw.line([pixels[i], pixels[i+1]], fill='#FF4500', width=6)
 
-    # Intermediate stops (show only those already passed)
+    # Intermediate stops (show only those south of current position)
     last_lat = route_pts_so_far[-1][1] if route_pts_so_far else all_route_pts[0][1]
     for s_lat, s_lon, name in station_markers:
         if s_lat <= last_lat + 0.01:
