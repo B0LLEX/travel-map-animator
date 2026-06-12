@@ -79,7 +79,7 @@ Or call the script directly:
 python3 make_map_animation.py \
   --start "10.7531,59.9110,Oslo" \
   --end   "5.3242,60.3929,Bergen" \
-  --title "Oslo → Bergen" --subtitle "~460 km" \
+  --title "Oslo - Bergen" --subtitle "~460 km" \
   --mode driving --zoom 7 \
   --output oslo_bergen.mp4
 ```
@@ -113,7 +113,7 @@ Example — Oslo S → Lillehammer via Dovrebanen:
 python3 make_map_animation.py \
   --start "10.7531,59.9110,Oslo S" \
   --end   "10.4647,61.1153,Lillehammer" \
-  --title "Dovrebanen // Oslo S → Lillehammer" \
+  --title "Dovrebanen // Oslo S - Lillehammer" \
   --subtitle "~183 km" \
   --output dovrebanen.mp4 \
   --zoom 8 --duration 5 --hold 2 \
@@ -152,6 +152,8 @@ and invoke the skill, which calls `make_map_animation.py` with the correct argum
   single-line results.
 - **Fonts.** The script tries macOS system fonts (Helvetica, Arial) first, then Linux fonts
   (DejaVu), then PIL's built-in fallback. Rendering may look slightly different across platforms.
+- **Title/subtitle text is rendered with system fonts via PIL — non-ASCII symbols (e.g. `→`) may
+  render as boxes depending on the available font. Stick to plain text for titles.**
 - **Video encoding.** On Apple Silicon, hardware H.264 encoding (`h264_videotoolbox`) is used
   automatically. On other hardware, the script falls back to `libx264` (software encoding, slower
   but universally available wherever ffmpeg is installed).

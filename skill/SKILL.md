@@ -27,7 +27,7 @@ brew install ffmpeg        # macOS
 python3 make_map_animation.py \
   --start  "10.7531,59.9110,Oslo" \
   --end    "5.3242,60.3929,Bergen" \
-  --title  "Oslo → Bergen" \
+  --title  "Oslo - Bergen" \
   --subtitle "~460 km" \
   --output  /path/to/output.mp4 \
   --zoom 7 --duration 5 --hold 2 --mode driving
@@ -116,7 +116,7 @@ and copy the number from the URL (e.g. `relation/965964` → ID is `965964`).
 python3 make_map_animation.py \
   --start "10.7531,59.9110,Oslo" \
   --end   "5.3242,60.3929,Bergen" \
-  --title "Oslo → Bergen" \
+  --title "Oslo - Bergen" \
   --subtitle "~460 km" \
   --output oslo_bergen.mp4 \
   --zoom 7 --duration 5 --hold 2 --mode driving
@@ -128,7 +128,7 @@ python3 make_map_animation.py \
 python3 make_map_animation.py \
   --start "10.7531,59.9110,Oslo S" \
   --end   "10.4647,61.1153,Lillehammer" \
-  --title "Dovrebanen // Oslo S → Lillehammer" \
+  --title "Dovrebanen // Oslo S - Lillehammer" \
   --subtitle "~183 km" \
   --output dovrebanen.mp4 \
   --zoom 8 --duration 5 --hold 2 \
