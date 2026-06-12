@@ -1,45 +1,46 @@
 #!/usr/bin/env python3
 """
-make_map_animation.py — Generer en Jet Lag-stil kartanimasjon der ruten tegner seg selv.
+make_map_animation.py — Generate a Jet Lag-style animated travel-route MP4.
 
-Kartfliser vert lasta ned ÉIN GONG. Alle frames teiknar rute+markørar direkte
-med PIL utan nettverkskall — rask og throttle-fri.
+Map tiles are downloaded ONCE. All frames draw the route and markers directly
+with PIL without network calls — fast and throttle-free.
 
 Usage:
     python3 make_map_animation.py \
-        --start "lon,lat,Stedsnavn" \
-        --end   "lon,lat,Stedsnavn" \
-        --stops "lon,lat,Navn" "lon,lat,Namn" \
-        --title "Tog // Kristiansand → Oslo S" \
-        --subtitle "Sørlandsbanen • Dag 1 • ca. 352 km" \
-        --output /path/til/kart_animasjon.mp4 \
+        --start "lon,lat,Place name" \
+        --end   "lon,lat,Place name" \
+        --stops "lon,lat,Name" "lon,lat,Name" \
+        --title "Train // Kristiansand → Oslo S" \
+        --subtitle "Sørlandsbanen • Day 1 • approx. 352 km" \
+        --output /path/to/map_animation.mp4 \
         [--zoom 7] [--fps 30] [--duration 4] [--mode driving|walking|rail] \
         [--osm-relation 200768]
 
-Modi:
-    driving  — OSRM veikjøring (buss/bil)
-    walking  — OSRM gangrute
-    rail     — Faktiske jernbanespor frå OpenStreetMap via Overpass API
+Modes:
+    driving  — OSRM road routing (bus/car)
+    walking  — OSRM walking route
+    rail     — Actual rail tracks from OpenStreetMap via Overpass API
 
---osm-relation (berre --mode rail):
-    OSM-relasjons-ID for ei navngjeven banestrekning (t.d. 200768 = Dovrebanen).
-    Hentar berre ways som er medlem av relasjonen — unngår fletter med sidespor
-    og lokalbaner i tette område (Oslo). Utan flagget vert alle rail-ways i
-    bounding box brukt (gammal oppførsel). Finn ID på openstreetmap.org ved å
-    søkje på banenamnet og velje "Relation"-treffet.
+--osm-relation (only with --mode rail):
+    OSM relation ID for a named rail line (e.g. 965964 = Dovrebanen).
+    Fetches only ways that are members of the relation — avoids tangling with
+    branch lines and metro tracks in dense areas (Oslo). Without this flag all
+    rail ways in the bounding box are used (legacy behaviour). Find the ID on
+    openstreetmap.org by searching for the line name and selecting the
+    "Relation" result.
 
-Avhengigheter:
+Dependencies:
     pip3 install --break-system-packages staticmap pillow requests
     brew install ffmpeg
 """
 
-import argparse, json, math, os, pathlib, shutil, subprocess, sys, tempfile, time
+import argparse, math, pathlib, shutil, subprocess, tempfile, time
 import requests
-from staticmap import StaticMap, Line, CircleMarker
+from staticmap import StaticMap, Line
 from PIL import Image, ImageDraw, ImageFont, ImageEnhance
 
 # ─────────────────────────────────────────────
-# KOORDINATKONVERTERING (Mercator, same as staticmap)
+# COORDINATE CONVERSION (Mercator, same as staticmap)
 # ─────────────────────────────────────────────
 
 def _lon_to_x(lon, zoom):
@@ -50,7 +51,7 @@ def _lat_to_y(lat, zoom):
             1 / math.cos(math.radians(lat))) / math.pi) / 2 * (2 ** zoom)
 
 def latlon_to_px(lat, lon, x_center, y_center, tile_size, width, height, zoom):
-    """Konverter lat/lon til pikselkoordinatar i det renderte kartet."""
+    """Convert lat/lon to pixel coordinates in the rendered map."""
     x = _lon_to_x(lon, zoom)
     y = _lat_to_y(lat, zoom)
     px = round((x - x_center) * tile_size + width / 2)
@@ -59,19 +60,21 @@ def latlon_to_px(lat, lon, x_center, y_center, tile_size, width, height, zoom):
 
 
 # ─────────────────────────────────────────────
-# HJELPEFUNKSJONER
+# HELPERS
 # ─────────────────────────────────────────────
 
 def get_font(size):
     for p in ['/System/Library/Fonts/Helvetica.ttc', '/System/Library/Fonts/Arial.ttf',
-              '/Library/Fonts/Arial.ttf']:
+              '/Library/Fonts/Arial.ttf',
+              '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
+              '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf']:
         try: return ImageFont.truetype(p, size)
         except: pass
     return ImageFont.load_default()
 
 
 def fetch_osrm_route(start_lon, start_lat, end_lon, end_lat, stops=None, mode='driving'):
-    """Hent faktisk veikjøring frå OSRM via alle waypoints."""
+    """Fetch actual road routing from OSRM across all waypoints."""
     waypoints = [(start_lon, start_lat)]
     if stops:
         waypoints += [(lon, lat) for lon, lat, *_ in stops]
@@ -79,17 +82,18 @@ def fetch_osrm_route(start_lon, start_lat, end_lon, end_lat, stops=None, mode='d
     coords = ";".join(f"{lon},{lat}" for lon, lat in waypoints)
     url = f"http://router.project-osrm.org/route/v1/{mode}/{coords}"
     r = requests.get(url, params={'overview': 'full', 'geometries': 'geojson'},
-                     headers={'User-Agent': 'MapAnimation/2.0'}, timeout=30)
+                     headers={'User-Agent': 'travel-map-animator/1.0 (+https://github.com/B0LLEX/travel-map-animator)'},
+                     timeout=30)
     r.raise_for_status()
     return r.json()['routes'][0]['geometry']['coordinates']
 
 
 def fetch_rail_route(start_lon, start_lat, end_lon, end_lat, stops=None, relation_id=None):
-    """Hent faktiske jernbanespor frå OpenStreetMap via Overpass API.
+    """Fetch actual rail tracks from OpenStreetMap via the Overpass API.
 
-    Med relation_id vert berre ways som er medlem av den OSM-relasjonen henta
-    (rein banestrekning, t.d. 200768 = Dovrebanen). Utan relation_id vert alle
-    rail-ways i bounding box brukt — kan gje fletter i tette område som Oslo.
+    With relation_id only ways that are members of that OSM relation are fetched
+    (a single named line, e.g. 200768 = Dovrebanen). Without relation_id all
+    rail ways in the bounding box are used — may tangle in dense areas like Oslo.
     """
     waypoints = [(start_lon, start_lat)]
     if stops:
@@ -97,7 +101,7 @@ def fetch_rail_route(start_lon, start_lat, end_lon, end_lat, stops=None, relatio
     waypoints.append((end_lon, end_lat))
 
     if relation_id:
-        print(f"  Henter jernbanespor frå OSM-relasjon {relation_id}...")
+        print(f"  Fetching rail tracks from OSM relation {relation_id}...")
         query = f"""
 [out:json][timeout:60];
 relation({relation_id});
@@ -113,7 +117,7 @@ out body;
         w_lon = min(all_lons) - margin
         e_lon = max(all_lons) + margin
 
-        print(f"  Henter jernbanespor ({s_lat:.2f},{w_lon:.2f} → {n_lat:.2f},{e_lon:.2f})...")
+        print(f"  Fetching rail tracks ({s_lat:.2f},{w_lon:.2f} → {n_lat:.2f},{e_lon:.2f})...")
         query = f"""
 [out:json][timeout:60];
 (
@@ -133,16 +137,17 @@ out body;
         try:
             if attempt > 0:
                 time.sleep(5 * attempt)
-                print(f"  → Prøver {endpoint}...")
+                print(f"  → Trying {endpoint}...")
             r = requests.post(endpoint, data={'data': query},
-                              headers={'User-Agent': 'MapAnimation/2.0'}, timeout=90)
+                              headers={'User-Agent': 'travel-map-animator/1.0 (+https://github.com/B0LLEX/travel-map-animator)'},
+                              timeout=90)
             r.raise_for_status()
             data = r.json()
             break
         except Exception as e:
-            print(f"  → Feil: {e}")
+            print(f"  → Error: {e}")
             if attempt == len(mirrors) - 1:
-                print("  ADVARSEL: Overpass feilet — bruker OSRM driving")
+                print("  WARNING: Overpass failed — falling back to OSRM driving")
                 return fetch_osrm_route(start_lon, start_lat, end_lon, end_lat, stops, 'driving')
 
     nodes = {}
@@ -150,7 +155,7 @@ out body;
         if el['type'] == 'node':
             nodes[el['id']] = (el['lon'], el['lat'])
 
-    # Med relasjon: behold berre spor-ways (ikkje plattformer/stopp-medlem)
+    # With relation: keep only track ways (not platforms/stops)
     track_way_ids = None
     if relation_id:
         skip_roles = {'platform', 'stop', 'platform_entry_only', 'platform_exit_only',
@@ -172,14 +177,14 @@ out body;
 
     if not segments:
         if relation_id:
-            print(f"  ADVARSEL: Relasjon {relation_id} gav ingen spor — prøver bounding box")
+            print(f"  WARNING: Relation {relation_id} returned no tracks — retrying with bounding box")
             return fetch_rail_route(start_lon, start_lat, end_lon, end_lat, stops)
-        print("  ADVARSEL: Ingen jernbanespor funnet — bruker OSRM driving")
+        print("  WARNING: No rail tracks found — falling back to OSRM driving")
         return fetch_osrm_route(start_lon, start_lat, end_lon, end_lat, stops, 'driving')
 
-    print(f"  Fant {len(segments)} jernbane-segmenter")
+    print(f"  Found {len(segments)} rail segments")
     route = connect_rail_segments(segments, waypoints)
-    print(f"  Jernbanerute: {len(route)} punkter")
+    print(f"  Rail route: {len(route)} points")
     return route
 
 
@@ -188,7 +193,7 @@ def dist(a, b):
 
 
 def connect_rail_segments(segments, waypoints):
-    """Kobler jernbane-segmenter til ein samanhengande rute."""
+    """Connect rail segments into a single continuous route."""
     start = waypoints[0]
     end   = waypoints[-1]
     used = [False] * len(segments)
@@ -229,8 +234,8 @@ def connect_rail_segments(segments, waypoints):
 
 def render_base_map(all_route_pts, zoom, w, h):
     """
-    Last ned kartfliser ÉIN GONG og returner (stilert RGBA PIL-bilete, x_center, y_center, tile_size, zoom_used).
-    Alle påfølgande frames bruker dette som bakgrunn — ingen ny nedlasting.
+    Download map tiles ONCE and return (styled RGBA PIL image, x_center, y_center, tile_size, zoom_used).
+    All subsequent frames reuse this as background — no additional downloads.
     """
     tile_servers = [
         'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
@@ -241,39 +246,39 @@ def render_base_map(all_route_pts, zoom, w, h):
     for attempt, server in enumerate(tile_servers):
         try:
             if attempt > 0:
-                print(f"  → Prøver tile-server: {server} (venter 5s)...")
+                print(f"  → Trying tile server: {server} (waiting 5s)...")
                 time.sleep(5)
             m = StaticMap(
                 w, h,
                 url_template=server,
-                headers={'User-Agent': 'MapAnimation/2.0 (nord-odal-vlog)'},
+                headers={'User-Agent': 'travel-map-animator/1.0 (+https://github.com/B0LLEX/travel-map-animator)'},
                 delay_between_retries=2,
                 tile_request_timeout=20,
             )
             ghost = [(lon, lat) for lon, lat in all_route_pts]
             m.add_line(Line(ghost, '#00000000', 1))
-            print(f"  Laster ned kartfliser frå {server} ...")
+            print(f"  Downloading map tiles from {server} ...")
             img = m.render(zoom=zoom)
-            # Lagre koordinatsenter for pikselkonvertering
+            # Save coordinate center for pixel conversion
             x_center = m.x_center
             y_center = m.y_center
             tile_size = m.tile_size
             zoom_used = m.zoom
 
-            # Jet Lag-fargestyling
+            # Jet Lag color styling
             img = ImageEnhance.Color(img).enhance(0.5)
             img = ImageEnhance.Brightness(img).enhance(0.78)
             img = ImageEnhance.Contrast(img).enhance(1.2)
-            print(f"  ✅ Basiskart klar ({w}×{h}, zoom={zoom_used})")
+            print(f"  Base map ready ({w}x{h}, zoom={zoom_used})")
             return img.convert('RGBA'), x_center, y_center, tile_size, zoom_used
         except Exception as e:
             last_err = e
-            print(f"  Tile-feil (forsøk {attempt+1}): {e}")
-    raise RuntimeError(f"Klarte ikkje laste kartfliser etter {len(tile_servers)} forsøk: {last_err}")
+            print(f"  Tile error (attempt {attempt+1}): {e}")
+    raise RuntimeError(f"Failed to load map tiles after {len(tile_servers)} attempts: {last_err}")
 
 
 def draw_circle(draw, cx, cy, r, fill):
-    """Teikn fylt sirkel med PIL."""
+    """Draw a filled circle with PIL."""
     draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=fill)
 
 
@@ -281,8 +286,8 @@ def build_frame(base_img_rgba, route_pts_so_far, all_route_pts, station_markers,
                 start_name, end_name, title, subtitle,
                 x_center, y_center, tile_size, zoom, w, h):
     """
-    Bygg éin frame ved å teikne rute + markørar på ein KOPI av base-kartet.
-    Ingen nettverkskall — berre PIL-teikneoperasjonar.
+    Build one frame by drawing route and markers onto a COPY of the base map.
+    No network calls — pure PIL drawing operations.
     """
     img = base_img_rgba.copy()
     draw = ImageDraw.Draw(img)
@@ -290,14 +295,14 @@ def build_frame(base_img_rgba, route_pts_so_far, all_route_pts, station_markers,
     def to_px(lon, lat):
         return latlon_to_px(lat, lon, x_center, y_center, tile_size, w, h, zoom)
 
-    # Teikn rute-linja progressivt
+    # Draw route line progressively
     if len(route_pts_so_far) >= 2:
         pixels = [to_px(lon, lat) for lon, lat in route_pts_so_far]
-        # Teikn tjukk linje segment for segment
+        # Draw thick line segment by segment
         for i in range(len(pixels) - 1):
             draw.line([pixels[i], pixels[i+1]], fill='#FF4500', width=6)
 
-    # Mellomstasjonar (vis berre dei vi har passert)
+    # Intermediate stops (show only those already passed)
     last_lat = route_pts_so_far[-1][1] if route_pts_so_far else all_route_pts[0][1]
     for s_lat, s_lon, name in station_markers:
         if s_lat <= last_lat + 0.01:
@@ -305,13 +310,13 @@ def build_frame(base_img_rgba, route_pts_so_far, all_route_pts, station_markers,
             draw_circle(draw, px, py, 7, '#FFFFFF')
             draw_circle(draw, px, py, 4, '#FF6B35')
 
-    # Start-markør (alltid synleg)
+    # Start marker (always visible)
     s_lon_r, s_lat_r = all_route_pts[0]
     sx, sy = to_px(s_lon_r, s_lat_r)
     draw_circle(draw, sx, sy, 13, '#FFFFFF')
     draw_circle(draw, sx, sy,  8, '#FF0000')
 
-    # Slutt-markør (ved >95% framdrift)
+    # End marker (shown at >95% progress)
     progress = len(route_pts_so_far) / max(1, len(all_route_pts))
     if progress > 0.95:
         e_lon_r, e_lat_r = all_route_pts[-1]
@@ -319,7 +324,7 @@ def build_frame(base_img_rgba, route_pts_so_far, all_route_pts, station_markers,
         draw_circle(draw, ex, ey, 13, '#FFFFFF')
         draw_circle(draw, ex, ey,  8, '#FF0000')
 
-    # UI-overlay (mørke striper + tekst)
+    # UI overlay (dark bars + text)
     ov = Image.new('RGBA', (w, h), (0, 0, 0, 0))
     d  = ImageDraw.Draw(ov)
     d.rectangle([(0, 0), (w, 100)],    fill=(0, 0, 0, 175))
@@ -337,12 +342,12 @@ def build_frame(base_img_rgba, route_pts_so_far, all_route_pts, station_markers,
 
 
 def easing(t):
-    """Ease in-out: langsom start og slutt, rask midten."""
+    """Ease in-out: slow start and end, fast middle."""
     return t * t * (3 - 2 * t)
 
 
 # ─────────────────────────────────────────────
-# HOVED
+# MAIN
 # ─────────────────────────────────────────────
 
 def main():
@@ -361,8 +366,8 @@ def main():
     ap.add_argument('--mode',     default='driving',
                     choices=['driving', 'walking', 'rail'])
     ap.add_argument('--osm-relation', type=int, default=None, metavar='ID',
-                    help='OSM relation ID for banestrekninga (berre --mode rail), '
-                         't.d. 200768 for Dovrebanen')
+                    help='OSM relation ID for the rail line (only with --mode rail), '
+                         'e.g. 965964 for Dovrebanen')
     ap.add_argument('--width',    type=int, default=1920)
     ap.add_argument('--height',   type=int, default=1080)
     args = ap.parse_args()
@@ -376,36 +381,36 @@ def main():
     stops = [parse_point(s) for s in (args.stops or [])]
     station_markers = [(lat, lon, name) for lon, lat, name in stops]
 
-    # Hent rute
+    # Fetch route
     if args.mode == 'rail':
-        print("Henter jernbanerute frå OpenStreetMap...")
+        print("Fetching rail route from OpenStreetMap...")
         raw_coords = fetch_rail_route(s_lon, s_lat, e_lon, e_lat, stops,
                                       relation_id=args.osm_relation)
     else:
         if args.osm_relation:
-            print("  MERK: --osm-relation gjeld berre --mode rail — ignorert")
-        print(f"Henter rute frå OSRM ({args.mode})...")
+            print("  NOTE: --osm-relation only applies to --mode rail — ignoring")
+        print(f"Fetching route from OSRM ({args.mode})...")
         raw_coords = fetch_osrm_route(s_lon, s_lat, e_lon, e_lat, stops, args.mode)
 
     step = max(1, len(raw_coords) // 400)
     route_pts = raw_coords[::step]
     if route_pts[-1] != raw_coords[-1]:
         route_pts.append(raw_coords[-1])
-    print(f"  Rute: {len(raw_coords)} → {len(route_pts)} punkt etter tynning")
+    print(f"  Route: {len(raw_coords)} → {len(route_pts)} points after decimation")
 
-    # ── Last ned basiskart ÉIN GONG ─────────────────────────────────
+    # ── Download base map ONCE ─────────────────────────────────
     base_img, x_center, y_center, tile_size, zoom_used = render_base_map(
         route_pts, args.zoom, args.width, args.height
     )
 
-    # Berekn frames
+    # Calculate frames
     n_anim  = int(args.fps * args.duration)
     n_hold  = int(args.fps * args.hold)
     n_total = n_anim + n_hold
     n_pts   = len(route_pts)
 
     tmpdir = pathlib.Path(tempfile.mkdtemp(prefix='map_anim_'))
-    print(f"Genererer {n_total} frames (PIL-only, ingen nettverkskall)...")
+    print(f"Generating {n_total} frames (PIL-only, no network calls)...")
 
     for frame_i in range(n_total):
         if frame_i < n_anim:
@@ -427,7 +432,7 @@ def main():
             pct = int(100 * (frame_i + 1) / n_total)
             print(f"  [{pct:3d}%] Frame {frame_i+1}/{n_total}", end='\r', flush=True)
 
-    print(f"\nKombinerer til video: {args.output}")
+    print(f"\nAssembling video: {args.output}")
     out = pathlib.Path(args.output)
     out.parent.mkdir(parents=True, exist_ok=True)
 
@@ -443,7 +448,7 @@ def main():
     ]
     result = subprocess.run(ffmpeg_cmd, capture_output=True)
     if result.returncode != 0:
-        print("  h264_videotoolbox ikkje tilgjengeleg, bruker libx264...")
+        print("  h264_videotoolbox not available, using libx264...")
         ffmpeg_cmd = [
             'ffmpeg', '-y', '-framerate', str(args.fps),
             '-i', str(tmpdir / 'frame_%05d.png'),
@@ -455,7 +460,7 @@ def main():
 
     shutil.rmtree(tmpdir)
     size_mb = out.stat().st_size / 1_000_000
-    print(f"✅ Ferdig: {out}  ({size_mb:.1f} MB, {n_total/args.fps:.1f}s)")
+    print(f"Done: {out}  ({size_mb:.1f} MB, {n_total/args.fps:.1f}s)")
 
 
 if __name__ == '__main__':
