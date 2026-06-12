@@ -63,7 +63,7 @@ apt install ffmpeg       # Debian / Ubuntu
 | `--duration`      | no       | `4.0`     | Seconds spent drawing the route |
 | `--hold`          | no       | `1.5`     | Extra seconds held on the finished map |
 | `--mode`          | no       | `driving` | `driving`, `walking`, or `rail` |
-| `--osm-relation`  | no       | none      | OSM relation ID for a named rail line (only with `--mode rail`) |
+| `--osm-relation`  | no       | none      | OSM relation ID(s) for a named rail line (only with `--mode rail`); comma-separated for multi-line journeys, e.g. `3200969,965964` |
 | `--width`         | no       | `1920`    | Output video width in pixels |
 | `--height`        | no       | `1080`    | Output video height in pixels |
 
@@ -96,28 +96,31 @@ Route geometry is fetched from the [public OSRM demo server](http://router.proje
 ### `rail`
 
 Rail geometry is fetched from OpenStreetMap via the [Overpass API](https://overpass-api.de).
-The script downloads the actual `railway=rail` ways in the bounding box and stitches them into
-a continuous route using a greedy nearest-neighbour algorithm.
+The script downloads the actual `railway=rail` ways belonging to the requested relation(s) and
+routes through them using a **Dijkstra shortest-path** on the shared OSM node graph — giving a
+single clean line that naturally excludes parallel tracks, branch lines, and metro sidings.
 
-**Recommended:** pass `--osm-relation <ID>` to restrict the query to a single named rail line
-(e.g. a relation that represents Dovrebanen). Without it, every rail way in the bounding box is
-included, which can look tangled in dense rail areas like city centres.
+**Recommended:** pass `--osm-relation <ID>` to restrict the query to a named rail relation.
+For journeys that cross multiple named lines, use comma-separated IDs — e.g.
+`--osm-relation 3200969,965964` to follow Gardermobanen then Dovrebanen from Oslo S to
+Lillehammer. Without any `--osm-relation`, all rail ways in the bounding box are used (legacy
+behavior — may tangle in dense rail areas like city centres).
 
 Finding a relation ID: search for the line name on [openstreetmap.org](https://www.openstreetmap.org),
 click the "Relation" result, and read the number from the URL — e.g. `relation/965964` gives ID `965964`
 (Dovrebanen, Oslo S → Trondheim).
 
-Example — Oslo S → Lillehammer via Dovrebanen:
+Example — Oslo S → Lillehammer via Gardermobanen + Dovrebanen:
 
 ```bash
 python3 make_map_animation.py \
   --start "10.7531,59.9110,Oslo S" \
-  --end   "10.4647,61.1153,Lillehammer" \
-  --title "Dovrebanen // Oslo S - Lillehammer" \
-  --subtitle "~183 km" \
-  --output dovrebanen.mp4 \
+  --end   "10.4663,61.1153,Lillehammer" \
+  --title "Oslo S - Lillehammer" \
+  --subtitle "~181 km • Gardermobanen + Dovrebanen" \
+  --output oslo_lillehammer.mp4 \
   --zoom 8 --duration 5 --hold 2 \
-  --mode rail --osm-relation 965964
+  --mode rail --osm-relation 3200969,965964
 ```
 
 If the Overpass API fails (all three mirror endpoints), the script automatically falls back to

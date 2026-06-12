@@ -14,7 +14,7 @@ Usage:
         --subtitle "Sørlandsbanen • Day 1 • approx. 352 km" \
         --output /path/to/map_animation.mp4 \
         [--zoom 7] [--fps 30] [--duration 4] [--mode driving|walking|rail] \
-        [--osm-relation 965964]
+        [--osm-relation 3200969,965964]
 
 Modes:
     driving  — OSRM road routing (bus/car)
@@ -23,7 +23,9 @@ Modes:
 
 --osm-relation (only with --mode rail):
     OSM relation ID for a named rail line (e.g. 965964 = Dovrebanen).
-    Fetches only ways that are members of the relation — avoids tangling with
+    Accepts comma-separated IDs for multi-line journeys, e.g.
+    "3200969,965964" (Gardermobanen+Dovrebanen) for Oslo S → Lillehammer.
+    Fetches only ways that are members of the relation(s) — avoids tangling with
     branch lines and metro tracks in dense areas (Oslo). Without this flag all
     rail ways in the bounding box are used (legacy behavior). Find the ID on
     openstreetmap.org by searching for the line name and selecting the
@@ -91,9 +93,10 @@ def fetch_osrm_route(start_lon, start_lat, end_lon, end_lat, stops=None, mode='d
 def fetch_rail_route(start_lon, start_lat, end_lon, end_lat, stops=None, relation_id=None):
     """Fetch actual rail tracks from OpenStreetMap via the Overpass API.
 
-    With relation_id only ways that are members of that OSM relation are fetched
-    (a single named line, e.g. 965964 = Dovrebanen). Without relation_id all
-    rail ways in the bounding box are used — may tangle in dense areas like Oslo.
+    With relation_id (a list of ints) only ways that are members of those OSM
+    relations are fetched (one or more named lines, e.g. [3200969, 965964] for
+    Gardermobanen+Dovrebanen). Without relation_id all rail ways in the bounding
+    box are used — may tangle in dense areas like Oslo.
     """
     waypoints = [(start_lon, start_lat)]
     if stops:
@@ -101,10 +104,12 @@ def fetch_rail_route(start_lon, start_lat, end_lon, end_lat, stops=None, relatio
     waypoints.append((end_lon, end_lat))
 
     if relation_id:
-        print(f"  Fetching rail tracks from OSM relation {relation_id}...")
+        rel_ids = [relation_id] if isinstance(relation_id, int) else list(relation_id)
+        print(f"  Fetching rail tracks from OSM relation(s) {', '.join(map(str, rel_ids))}...")
+        rel_q = ''.join(f'relation({rid});' for rid in rel_ids)
         query = f"""
 [out:json][timeout:60];
-relation({relation_id});
+({rel_q});
 (._;>>;);
 out body;
 """
@@ -155,7 +160,7 @@ out body;
         if el['type'] == 'node':
             nodes[el['id']] = (el['lon'], el['lat'])
 
-    # With relation: keep only track ways (not platforms/stops)
+    # With relation(s): keep only track ways (not platforms/stops)
     track_way_ids = None
     if relation_id:
         skip_roles = {'platform', 'stop', 'platform_entry_only', 'platform_exit_only',
@@ -167,23 +172,37 @@ out body;
                                   if m['type'] == 'way' and m.get('role', '') not in skip_roles}
 
     segments = []
+    way_node_lists = []
     for el in data['elements']:
         if el['type'] == 'way' and 'nodes' in el:
             if track_way_ids is not None and el['id'] not in track_way_ids:
                 continue
-            pts = [nodes[nid] for nid in el['nodes'] if nid in nodes]
-            if len(pts) >= 2:
-                segments.append(pts)
+            nids = [nid for nid in el['nodes'] if nid in nodes]
+            if len(nids) >= 2:
+                segments.append([nodes[nid] for nid in nids])
+                way_node_lists.append(nids)
 
     if not segments:
         if relation_id:
-            print(f"  WARNING: Relation {relation_id} returned no tracks — retrying with bounding box")
+            print("  WARNING: Relation(s) returned no tracks — retrying with bounding box")
             return fetch_rail_route(start_lon, start_lat, end_lon, end_lat, stops)
         print("  WARNING: No rail tracks found — falling back to OSRM driving")
         return fetch_osrm_route(start_lon, start_lat, end_lon, end_lat, stops, 'driving')
 
     print(f"  Found {len(segments)} rail segments")
-    route = connect_rail_segments(segments, waypoints)
+
+    # Relation mode: shortest path through the track graph. OSM ways share node
+    # IDs where tracks connect, giving real topology — parallel tracks and branch
+    # lines are naturally excluded.
+    if relation_id:
+        route = route_via_graph(way_node_lists, nodes, waypoints[0], waypoints[-1])
+        if route and len(route) >= 2:
+            print(f"  Rail route (graph path): {len(route)} points")
+            return route
+        print("  WARNING: No connected graph path found — falling back to greedy stitching")
+
+    route = connect_rail_segments(segments, waypoints,
+                                  prefer_toward_end=bool(relation_id))
     print(f"  Rail route: {len(route)} points")
     return route
 
@@ -192,8 +211,72 @@ def dist(a, b):
     return math.sqrt((a[0]-b[0])**2 + (a[1]-b[1])**2)
 
 
-def connect_rail_segments(segments, waypoints):
-    """Connect rail segments into a single continuous route."""
+def route_via_graph(way_node_lists, node_coords, start, end):
+    """Shortest path (Dijkstra) through the track graph from the node nearest
+    start to the node nearest end. OSM ways share node IDs where tracks connect,
+    so the graph has real topology — parallel tracks and branch lines fall away
+    naturally. Returns a list of (lon, lat), or None if no path exists.
+    """
+    import heapq
+    adj = {}
+    def add_edge(a, b, w):
+        adj.setdefault(a, []).append((b, w))
+        adj.setdefault(b, []).append((a, w))
+
+    for nlist in way_node_lists:
+        for a, b in zip(nlist, nlist[1:]):
+            add_edge(a, b, dist(node_coords[a], node_coords[b]))
+
+    # Stitch nearly-adjacent way endpoints (small data gaps, e.g. where two
+    # relations meet without sharing a node).
+    endpoints = list({nl[0] for nl in way_node_lists} | {nl[-1] for nl in way_node_lists})
+    for i, a in enumerate(endpoints):
+        ca = node_coords[a]
+        for b in endpoints[i+1:]:
+            d = dist(ca, node_coords[b])
+            if 0 < d < 0.003:  # ~300 m
+                add_edge(a, b, d)
+
+    if not adj:
+        return None
+    src = min(adj, key=lambda n: dist(node_coords[n], start))
+    dst = min(adj, key=lambda n: dist(node_coords[n], end))
+
+    best = {src: 0.0}
+    prev = {}
+    pq = [(0.0, src)]
+    done = set()
+    while pq:
+        d, u = heapq.heappop(pq)
+        if u in done:
+            continue
+        done.add(u)
+        if u == dst:
+            break
+        for v, w in adj[u]:
+            nd = d + w
+            if nd < best.get(v, float('inf')):
+                best[v] = nd
+                prev[v] = u
+                heapq.heappush(pq, (nd, v))
+
+    if dst not in done:
+        return None
+    path = [dst]
+    while path[-1] != src:
+        path.append(prev[path[-1]])
+    path.reverse()
+    return [node_coords[n] for n in path]
+
+
+def connect_rail_segments(segments, waypoints, prefer_toward_end=False):
+    """Connect rail segments into a single continuous route.
+
+    prefer_toward_end: when two candidate segments are within ~200 m of each
+    other (tie-break zone), prefer the one whose far end is closest to the
+    destination. This prevents the greedy walk from doubling back on parallel
+    tracks in double-track sections (used as fallback in relation mode).
+    """
     start = waypoints[0]
     end   = waypoints[-1]
     used = [False] * len(segments)
@@ -212,15 +295,23 @@ def connect_rail_segments(segments, waypoints):
 
     for _ in range(len(segments) - 1):
         last = route[-1]
-        best_i2, best_rev2, best_d2 = -1, False, float('inf')
+        # (connection distance, index, reversed, far-end distance to finish)
+        candidates = []
         for i, seg in enumerate(segments):
             if used[i]: continue
-            if dist(last, seg[0]) < best_d2:
-                best_d2, best_i2, best_rev2 = dist(last, seg[0]), i, False
-            if dist(last, seg[-1]) < best_d2:
-                best_d2, best_i2, best_rev2 = dist(last, seg[-1]), i, True
-        if best_d2 > 0.4 or best_i2 == -1:
+            candidates.append((dist(last, seg[0]),  i, False, dist(seg[-1], end)))
+            candidates.append((dist(last, seg[-1]), i, True,  dist(seg[0],  end)))
+        if not candidates:
             break
+        best_d2 = min(c[0] for c in candidates)
+        if best_d2 > 0.4:
+            break
+        if prefer_toward_end:
+            eps = 0.002  # ~200 m — catches switch-point endpoints on parallel tracks
+            near = [c for c in candidates if c[0] <= best_d2 + eps]
+            _, best_i2, best_rev2, _ = min(near, key=lambda c: c[3])
+        else:
+            _, best_i2, best_rev2, _ = min(candidates, key=lambda c: c[0])
         seg = segments[best_i2]
         route += (list(reversed(seg)) if best_rev2 else seg)[1:]
         used[best_i2] = True
@@ -365,9 +456,11 @@ def main():
     ap.add_argument('--hold',     type=float, default=1.5)
     ap.add_argument('--mode',     default='driving',
                     choices=['driving', 'walking', 'rail'])
-    ap.add_argument('--osm-relation', type=int, default=None, metavar='ID',
-                    help='OSM relation ID for the rail line (only with --mode rail), '
-                         'e.g. 965964 for Dovrebanen')
+    ap.add_argument('--osm-relation', type=str, default=None, metavar='ID[,ID...]',
+                    help='OSM relation ID(s) for the rail line (only with --mode rail); '
+                         'comma-separated for multi-line journeys, e.g. '
+                         '"3200969,965964" for Gardermobanen+Dovrebanen '
+                         '(Oslo S to Lillehammer)')
     ap.add_argument('--width',    type=int, default=1920)
     ap.add_argument('--height',   type=int, default=1080)
     args = ap.parse_args()
@@ -381,11 +474,18 @@ def main():
     stops = [parse_point(s) for s in (args.stops or [])]
     station_markers = [(lat, lon, name) for lon, lat, name in stops]
 
+    rel_ids = None
+    if args.osm_relation:
+        try:
+            rel_ids = [int(x) for x in args.osm_relation.split(',') if x.strip()]
+        except ValueError:
+            ap.error(f"--osm-relation must be integers (comma-separated): {args.osm_relation!r}")
+
     # Fetch route
     if args.mode == 'rail':
         print("Fetching rail route from OpenStreetMap...")
         raw_coords = fetch_rail_route(s_lon, s_lat, e_lon, e_lat, stops,
-                                      relation_id=args.osm_relation)
+                                      relation_id=rel_ids)
     else:
         if args.osm_relation:
             print("  NOTE: --osm-relation only applies to --mode rail — ignoring")

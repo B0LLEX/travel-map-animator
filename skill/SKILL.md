@@ -48,7 +48,7 @@ python3 make_map_animation.py \
 | `--duration`    | no       | 4.0       | Seconds for the drawing animation |
 | `--hold`        | no       | 1.5       | Extra seconds on the finished map |
 | `--mode`        | no       | driving   | `driving` or `walking` (OSRM) or `rail` (OSM rail ways via Overpass) |
-| `--osm-relation`| no       | none      | OSM relation ID for a named rail line (only with `--mode rail`), e.g. 965964 = Dovrebanen |
+| `--osm-relation`| no       | none      | OSM relation ID(s) for a named rail line (only with `--mode rail`); comma-separated for multi-line journeys, e.g. `3200969,965964` for Gardermobanen+Dovrebanen |
 | `--width`       | no       | 1920      | Output video width in pixels |
 | `--height`      | no       | 1080      | Output video height in pixels |
 
@@ -104,8 +104,11 @@ Save to any path you choose — for example:
 **Never use `driving` for trains** — OSRM may follow a parallel road instead of the track.
 `--mode rail` fetches `railway=rail` ways from OpenStreetMap and stitches them in order.
 
-For clean results on named rail lines, use `--osm-relation <ID>`. Without it, all rail ways
-in the bounding box are used, which can look tangled in dense rail areas.
+For clean results on named rail lines, use `--osm-relation <ID>`. The script routes through
+the track graph using Dijkstra shortest-path on shared OSM nodes — parallel tracks and branch
+lines are excluded automatically. For journeys spanning multiple named lines, pass comma-separated
+IDs (e.g. `--osm-relation 3200969,965964` for Gardermobanen+Dovrebanen). Without any relation
+flag, all rail ways in the bounding box are used (may look tangled in dense areas).
 
 Find a relation ID on openstreetmap.org: search the line name, pick the "Relation" result,
 and copy the number from the URL (e.g. `relation/965964` → ID is `965964`).
@@ -122,12 +125,25 @@ python3 make_map_animation.py \
   --zoom 7 --duration 5 --hold 2 --mode driving
 ```
 
-## Worked example: Oslo S → Lillehammer (rail, Dovrebanen)
+## Worked example: Oslo S → Lillehammer (rail, Gardermobanen + Dovrebanen)
 
 ```bash
 python3 make_map_animation.py \
   --start "10.7531,59.9110,Oslo S" \
-  --end   "10.4647,61.1153,Lillehammer" \
+  --end   "10.4663,61.1153,Lillehammer" \
+  --title "Oslo S - Lillehammer" \
+  --subtitle "~181 km • Gardermobanen + Dovrebanen" \
+  --output oslo_lillehammer.mp4 \
+  --zoom 8 --duration 5 --hold 2 \
+  --mode rail --osm-relation 3200969,965964
+```
+
+Single-line variant (Dovrebanen only, from Eidsvoll):
+
+```bash
+python3 make_map_animation.py \
+  --start "10.7531,59.9110,Oslo S" \
+  --end   "10.4663,61.1153,Lillehammer" \
   --title "Dovrebanen // Oslo S - Lillehammer" \
   --subtitle "~183 km" \
   --output dovrebanen.mp4 \
