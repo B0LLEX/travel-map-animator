@@ -14,7 +14,7 @@ Usage:
         --subtitle "Sørlandsbanen • Day 1 • approx. 352 km" \
         --output /path/to/map_animation.mp4 \
         [--zoom 7] [--fps 30] [--duration 4] [--mode driving|walking|rail] \
-        [--osm-relation 200768]
+        [--osm-relation 965964]
 
 Modes:
     driving  — OSRM road routing (bus/car)
@@ -92,7 +92,7 @@ def fetch_rail_route(start_lon, start_lat, end_lon, end_lat, stops=None, relatio
     """Fetch actual rail tracks from OpenStreetMap via the Overpass API.
 
     With relation_id only ways that are members of that OSM relation are fetched
-    (a single named line, e.g. 200768 = Dovrebanen). Without relation_id all
+    (a single named line, e.g. 965964 = Dovrebanen). Without relation_id all
     rail ways in the bounding box are used — may tangle in dense areas like Oslo.
     """
     waypoints = [(start_lon, start_lat)]
